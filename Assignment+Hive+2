@@ -1,0 +1,782 @@
+-----------------------------------------------------------------------------------------------
+----------------------------- ASSIGNMENT: DATA INGESTION AND PROCESSING -----------------------
+------------------------------------------------------------------------------------------------
+
+-- We are planning to analyse newyork city yellow taxi trip data 
+
+--------------------------------------------PART - 0: --------------------------------
+------------------------------- CREATING REGULAR TABLE  ---------------------
+------------------------------------------------------------------------------------
+
+-- Add jar for the queries to run
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+----------------------------------------------------------------------------------------
+
+
+-- 1. Creating ORC format partitioned data:
+---- ORC file format helps in making very fast query performance.
+---- We also make a partitioned data file so that, whenever we want a particular portion of data, the query directly access the
+---- particular partition to access the data which inturn speeds up querying.
+
+-- Step 1a: Let us make a regular table 
+-- NAME OF THE TABLE: 'yellow_tripdata_2017'
+drop table if exists yellow_tripdata_2017;
+
+create external table if not exists yellow_tripdata_2017(
+VendorID int, 
+tpep_pickup_datetime timestamp,
+tpep_dropoff_datetime timestamp,
+passenger_count int, 
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' 
+location '/common_folder/nyc_taxi_data/'
+TBLPROPERTIES ("skip.header.line.count"="1");
+
+
+--- Step 1c: To cross check proper loading of data, let us look at select data
+select * from yellow_tripdata_2017 limit 10;
+--- Count the total number of rows -----------
+select count(*) as total_rows from yellow_tripdata_2017;
+
+-- Total Rows in the data are 1174569
+
+----- Successfully completed creating a regular table ---------------------------------------------------
+
+--------------------------------------------- PART - 1: -----------------------------------------------------------
+-------------------------------------- BASIC DATA QUALITY CHECKS ---------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------
+
+-- Question 1: How many records has each TPEP provider provided? 
+--             Write a query that summarises the number of records of each provider.
+
+--- The column that indicates the TPEP provider is 'vendorid'. 
+--  Let us group the data by vendorid and see how many records each tpep provider provided
+
+select vendorid as tpep_provider, count(*) as records_per_provider 
+from yellow_tripdata_2017
+group by vendorid
+order by vendorid;
+
+------ Result Obtained from Query: You can cross check if necessary -----------
+--------------------------
+-- tpep_provider    records_per_provider
+--	1	            527386
+--	2	            647183
+---------------------------
+
+-- Question 2: The data provided is for months November and December only. 
+-- Check whether the data is consistent, and if not, identify the data quality issues. 
+-- Mention all data quality issues in comments.
+
+-- Step 1: Check how many distinct months are present in the data
+select  month(tpep_pickup_datetime) as trip_mnth, count(*) as trips_per__mnth 
+from yellow_tripdata_2017
+group by month(tpep_pickup_datetime);
+
+------ Result Obtained from Query: You can cross check if necessary -----------
+-- trip_mnth	trips_per__mnth
+--  1	            6
+--  10	            6
+--	11	            580300
+--	12	            594257
+-----------------------------------------------------------------------
+ -- Remarks: We are asked to work with november and december data. There are 12 rows in excess having other months data.
+-- We should find out who is the vendor giving different rows than asked for.
+
+-- Step 2: Check the vendor who gave this excess information
+select  year(tpep_pickup_datetime) as trip_year, month(tpep_pickup_datetime) as trip_mnth, count(*) as data_count_per_year_month 
+from yellow_tripdata_2017
+group by year(tpep_pickup_datetime), month(tpep_pickup_datetime);
+
+-- RESULTS FOR YEAR AND MONTH WISE DATA
+-- 	trip_year	trip_mnth	data_count_per_year_month
+--	2003	        1	        1
+--  2008	        12	        2
+--	2009	        1	        1
+--	2017	        11	        580300
+--	2017	        10	        6
+--	2017	        12	        594255
+--	2018	        1	        4
+
+select vendorid as vendorid_with_excessdata from yellow_tripdata_2017
+where month(tpep_pickup_datetime) = 10 
+   or month(tpep_pickup_datetime) = 1
+   or year(tpep_pickup_datetime) = 2008
+   or year(tpep_pickup_datetime) = 2009;
+
+-- Remarks: Data Quality issues include
+-- 1. vendorid = 2 (VeriFone Inc) presented us with unneccesary data of 10th and first month of different years and december 2008.
+-- 2. Additional records include:
+    -- 2.1. 1 record from january 2003
+    -- 2.2. 2 records from december 2008 (We are looking for 2017 dec records, so these are unnecessary)
+    -- 2.3. 1 record from 2009 january
+    -- 2.4. 6 records from 2017 october
+    -- 2.5. 4 records from 2018 january
+
+-- Let us look at the pickup time for the 2017 october and 2018 january records
+select tpep_pickup_datetime, tpep_dropoff_datetime from yellow_tripdata_2017
+where (year(tpep_pickup_datetime) = 2017 and month(tpep_pickup_datetime) = 10) or 
+(year(tpep_pickup_datetime) = 2018 and month(tpep_pickup_datetime) = 1)
+
+-- RESULTS:
+-------------------------------------------------
+-- 	tpep_pickup_datetime	tpep_dropoff_datetime
+-------------------------------------------------
+--	2017-10-31 23:59:00.0	2017-11-01 00:11:00.0
+--	2017-10-31 23:59:00.0	2017-11-01 00:06:00.0
+--	2017-10-31 23:59:00.0	2017-11-01 00:10:00.0
+--	2017-10-31 11:23:00.0	2017-10-31 11:28:00.0
+--	2017-10-31 18:56:00.0	2017-11-01 18:18:00.0
+--	2017-10-31 18:33:00.0	2017-10-31 18:38:00.0
+--	2018-01-01 00:00:00.0	2018-01-01 00:12:00.0
+--	2018-01-01 00:00:00.0	2018-01-01 00:15:00.0
+--	2018-01-01 00:00:00.0	2018-01-01 00:00:00.0
+--	2018-01-01 00:04:00.0	2018-01-01 00:17:00.0
+
+
+-- Remarks: While verifying the time stamps for pick up and drop off for 2017 october and 2018 january data which has been 
+-- provided additional. From the query, it is evident that, either pickup or  drop off is in the last minutes or first minutes 
+-- of the october, january months. (Ex: 11:59 October 31 ~ November 1)
+
+-- Though this data is not violating any assumptions. We are still planning to remove this data since it has only 10 records as such 
+-- and loss of data is very less.
+
+-- Question 3: You might have encountered unusual or erroneous rows in the dataset. 
+-- Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? 
+-- Summarise your conclusions based on every column where these errors are present. 
+-- For example,  There are unusual passenger count, i.e. 0 which is unusual.
+
+-- 1. Find out if there are any null values
+select count(*) as null_count from yellow_tripdata_2017
+where vendorid = "NULL"
+or tpep_pickup_datetime = "NULL"
+or tpep_dropoff_datetime = "NULL"
+or passenger_count = "NULL"
+or trip_distance = "NULL"
+or RatecodeID = "NULL"
+or store_and_fwd_flag = "NULL"
+or PULocationID = "NULL"
+or DOLocationID = "NULL"
+or payment_type = "NULL"
+or fare_amount = "NULL"
+or extra = "NULL"
+or mta_tax = "NULL"
+or tip_amount = "NULL"
+or tolls_amount = "NULL"
+or improvement_surcharge = "NULL"
+or total_amount = "NULL";
+
+-- RESULT: Null Values are 0
+-- Remarks: No null values in the data which is a good thing.
+
+-- 2. Find out the min and max values for each column grouping by vendor id to understand erroneous data from individual vendors
+
+-- # 1. Passenger Count Stats
+select vendorid,
+       min(passenger_count) as min_passenger_count, 
+       max(passenger_count) as max_passenger_count,
+       round(avg(passenger_count)) as avg_passenger_count
+       from yellow_tripdata_2017
+       group by vendorid;
+       
+-- RESULT:
+-- 	vendorid	min_passenger_count	max_passenger_count	avg_passenger_count
+--	2	        0	                    9	            2
+--	1	        0	                    7	            1
+
+-- Note: Rounded to nearest integer to get integer value
+-- Both vendors have passenger count = 0. Next step is, which vendor has more passenger counts to be zero.
+select vendorid, count(*) as zero_passengers
+       from yellow_tripdata_2017
+       where passenger_count = 0
+       group by vendorid;
+
+-- RESULTS: ------------
+-- 	vendorid	zero_passengers
+--	2	        11
+--	1	        6813
+
+-- Final Remarks: Passanger Count is something driver enters manually, In case of vendor 1 ( Creative Mobile Technologies) 
+-- there are high number of erroneous passenger counts
+
+-- # 1 End Passenger Count EDA -----
+
+-- # 2. trip_distance Stats
+
+select vendorid,
+       min(trip_distance) as min_trip_distance, 
+       max(trip_distance) as max_trip_distance,
+       round(avg(trip_distance),2) as avg_trip_distance
+       from yellow_tripdata_2017
+       group by vendorid;
+       
+-- RESULT:
+--	vendorid	min_trip_distance	max_trip_distance	avg_trip_distance
+--	2	        0	                126.41	            2.95
+--	1	        0	                102.4	            2.77
+ 
+-- Both vendors have trip distance = 0. Next step is, which vendor has more values with trip distance to be zero.
+select vendorid, count(*) as zero_distance
+       from yellow_tripdata_2017
+       where trip_distance = 0
+       group by vendorid;
+
+-- RESULTS:
+-- 	vendorid	zero_distance
+--	2	        3185
+--	1	        4217
+
+-- Remarks: In trip distance, both vendors presented substantial amount of erroneous data
+
+-- # 2. End of Trip Distance EDA
+
+-- # 3. Understanding Categorical Columns
+-- Some columns like RatecodeID, store_and_fwd_flag, payment_type are few features/columns that are categorical. 
+-- Let us look at the distinct values, these distinct values suggest that there is no random category added by the vendor
+
+-- # 3.1 RatecodeID:
+select 
+       vendorid, RatecodeID, count(*) as ratecode_count 
+       from yellow_tripdata_2017
+       group by vendorid, RatecodeID;
+
+-- RESULTS:
+-- 	vendorid	ratecodeid	ratecode_count
+--	1	            1	        513991
+--	1	            3	        1186
+--	1	            5	        1425
+--	1	            99	        8
+--	1	            2	        10544
+--	1	            4	        230
+--	1	            6	        2
+--	2	            2	        14794
+--	2	            4	        356
+--	2	            6	        1
+--	2	            1	        628287
+--	2	            3	        1376
+--	2	            5	        2368
+--	2	            99	        1
+
+-- Remarks: There is no rate code 99 at all in the metadata. This is an erroneous data which is more erronous with vendor id = 1 data
+
+-- # 3.1 End of RatecodeID EDA -----
+
+-- # 3.2 store_and_fwd_flag
+
+select 
+       vendorid, store_and_fwd_flag, count(*) as flag_count 
+       from yellow_tripdata_2017
+       group by vendorid, store_and_fwd_flag;
+       
+-- RESULTS: 
+-- 	vendorid	store_and_fwd_flag	flag_count
+--	1	            Y	                3951
+--	2	            N	                647183
+--	1	            N	                523435
+
+-- Remarks: Except the fact that there is no vehicle to server connection for vehicles with vendor 2, there is no erroneous information in data
+-- # 3.2 End of EDA for flag
+
+-- # 3.3. payment_type 
+select 
+       vendorid, payment_type, count(*) as payment_type_count 
+       from yellow_tripdata_2017
+       group by vendorid, payment_type;
+
+-- RESULTS:
+--	vendorid	payment_type	payment_type_count
+--	1	            1	            353034
+--	1	            3	            5861
+--	2	            2	            209404
+--	2	            4	            144
+--	1	            2	            166970
+--	1	            4	            1521
+--	2	            1           	437222
+--	2	            3           	413
+ 
+-- Remarks: Payment types are all with in the specified categories
+-- # 3.3 End of EDA for Payment type
+
+-- # 4. Understanding Amount related Columns
+-- A generic assumption for amount related columns is the amount will be >= 0
+
+-- Column specific assumptions: We assume
+-- 1. All trips pay minimum fare > 0 (fare amount) and (total amount) even when trip distance = 0 as min charge. 
+--    So anything <= 0 roww is considered erroneous
+-- 2. All tip related columns will have amounts >= 0
+-- 3. Columns including extra, mtax and improvement surcharge are dynamic. Standatd values in the metadata are given 
+--    and any value deviating from the mentioned values in metadata are considered erroneous.
+
+-- NOTE: We assume no offers whatsoever
+-- # 4.1: Fare_amount
+select vendorid,
+       min(Fare_amount) as min_Fare_amount, 
+       max(Fare_amount) as max_Fare_amount,
+       round(avg(Fare_amount),2) as avg_Fare_amount
+       from yellow_tripdata_2017
+       group by vendorid;
+
+-- RESULTS:
+-- 	vendorid	min_fare_amount	max_fare_amount	avg_fare_amount
+--	2	            -200	        488.5	        13.17
+--	1	             0	            650	            12.77
+
+-- Remarks: Deleting the data with <= 0 fare amounts. Let us find out how many rows are there
+
+select vendorid, count(*) as unusual_fare_amounts
+       from yellow_tripdata_2017
+       where Fare_amount <= 0
+       group by vendorid
+
+-- RESULTS:
+-- 	vendorid	unusual_fare_amounts
+--	2	            639
+--	1	            231
+-- Try and delete these columns while partitioning
+-- Remarks: Vendor2 has higher erroneous data interms of unusual fare amount
+
+-- # 4.1 End of EDA for fare amount
+
+-- # 4.2 Total amount will have similar behaviour. 
+select vendorid,
+       min(Total_amount) as min_Total_amount, 
+       max(Total_amount) as max_Total_amount,
+       round(avg(Total_amount),2) as avg_Total_amount
+       from yellow_tripdata_2017
+       group by vendorid;
+
+-- RESULTS:
+-- 	vendorid	min_total_amount	max_total_amount	avg_total_amount
+--	2	            -200.8	            490.3	            16.53
+--  1               	0	            928.19	            16.00
+
+-- Remarks: Deleting the data with <= 0 fare amounts. Let us find out how many rows are there
+
+select vendorid, count(*) as unusual_total_amounts
+       from yellow_tripdata_2017
+       where Total_amount <= 0
+       group by vendorid
+
+-- RESULTS:
+-- 	vendorid	unusual_total_amounts
+--	2	            639
+--	1	            42
+
+-- Remarks: Deleting the data with <= 0 fare amounts. Let us find out how many rows are there
+-- # 4.2 end of EDA for total Amount
+
+-- # 4.3.1: Extra: This is a categorical data with 0.5$ and 1$ as extra charges in this work.
+select 
+       vendorid, Extra, count(*) as Extra_count 
+       from yellow_tripdata_2017
+       group by vendorid, Extra
+       order by vendorid;
+
+-- 	vendorid	extra	extra_count
+--	1	        -10.6	1
+--	1	         0  	284273
+--	1	         0.5	161608
+--	1	         1  	79682
+--	1	         1.5	2
+--	1	         2  	1
+--	1	         4.5	1819
+--	2	        -4.5	5
+--	2	        -1  	87
+--	2	        -0.5	193
+--	2	         0  	347599
+--	2	         0.3   	36
+--	2	         0.5	201847
+--	2	         1  	94704
+--	2	         4.5	2683
+--  2	         4.8	1
+--	2	         0.8	15
+--	2	         1.3	13
+ 
+-- Remarks: We can say any charges other than 0$ ,0.5$ and 1$ are outside the scope of this work and considered erroneous data. 
+-- Because we have no extra charge or charges for rush hour and overnight additionally
+
+-- # 4.3.2: MTA_tax (Since dy=namic and categorical, we will stidy it categorical)
+select 
+       vendorid, MTA_tax, count(*) as MTAtax_count 
+       from yellow_tripdata_2017
+       group by vendorid, MTA_tax
+       order by vendorid;
+
+-- RESULTS:
+--	vendorid	mta_tax	mtatax_count
+--	1	        11.4	    1
+--	1	        0	        2711
+--	1	        0.5     	524674
+--	2	        -0.5	    544
+--	2	        0	        2486
+--	2	        0.5	        644150
+--	2	        3	        3
+
+-- Remarks: Since mta tax differ on distance, we can say charges < 0 are erroneous and everyhting else is good according to our assumptions.
+
+-- # 4.3.3: Improvement_surcharge (Since dy=namic and categorical, we will stidy it categorical)
+select 
+       vendorid, Improvement_surcharge, count(*) as Improvement_surcharge_count 
+       from yellow_tripdata_2017
+       group by vendorid, Improvement_surcharge
+       order by vendorid;
+
+-- RESULTS:
+--	vendorid	improvement_surcharge	improvement_surcharge_count
+--	1	                   0                	61
+--	1                      0.3              	527325
+--	2	                -0.3	                558
+--	2	                   0	                226
+--	2	                 0.3                	646395
+--	2	                   1	                4
+
+-- Remarks: we can say charges < 0 are erroneous and everyhting else is good according to our assumptions. 
+--          Vendor 2 presented erroneous data
+
+-- # 4.3.4 Tip Amount (It s acontinuous column, so performing basic descriptive statistics)
+select vendorid,
+       min(Tip_amount) as min_Tip_amount, 
+       max(Tip_amount) as max_Tip_amount,
+       round(avg(Tip_amount),2) as avg_Tip_amount
+       from yellow_tripdata_2017
+       group by vendorid;
+
+-- RESULTS:
+--	vendorid	min_tip_amount	max_tip_amount	avg_tip_amount
+--	2	            -1.16	        450	        1.88
+--	1	                0	        265	        1.81
+
+-- Remarks: Tip Amount should be >=0. Vendor 2 has erroneous data. Tips may or may not be given
+
+-- # 4.3.5 Tolls Amount ()
+select vendorid,
+       min(Tolls_amount) as min_Tolls_amount, 
+       max(Tolls_amount) as max_Tolls_amount,
+       round(avg(Tolls_amount),2) as avg_Tolls_amount
+       from yellow_tripdata_2017
+       group by vendorid;
+
+-- RESULTS:
+-- 	vendorid	min_tolls_amount	max_tolls_amount	avg_tolls_amount
+--	2	            -5.76	            90	            0.34
+--	1	             0	                895.89	        0.31
+
+-- Remarks: Tolls >= 0 is a good data. Vendor 2 has erroneous data. Tolls may or ,may not have been crossed
+
+
+----------------------------------------------- END OF EDA --------------------
+-- FINAL REMARKS ON VENDORS: -------------------------------------------
+-- In terms of passenger count, trip distance, rate code, such features, vendor 1 is doing a bad job
+-- In terms of fare amout, total amount,tax and so on vendor 2 is doing a bad job in providing data
+-- But in terms of overall transaction related issues, vendor 1 did a better job
+-- In terms of transperency in passenger data, vendor 1 did a better job and vendor 2 gave a lot of erroneous data
+
+----------------------- End of Remarks on vendors ----------------------
+
+
+-- FINAL REMARKS: CONDITIONS WE APPLY WHILE PARTITIONING DATA AND SAVING IN DIR's -------------------------------------
+-- 1. YEAR = 2017
+-- 2. MONTHS OF PICKUP = 11,12
+-- 3. PASSENGER COUNT > 0
+-- 4. MIN TRIP DISTANCE > 0
+-- 5. RATECODE ID != 99
+-- 6. FARE AMOUNT > 0
+-- 7. TOTAL AMOUNT > 0
+-- 8. Extra is 0$ or 0.5$ or 1$
+-- 9. MTA_tax = 0.5$
+-- 10 IMprovement_surcharge = 0.3$
+-- 11. Tip AMount >= 0
+-- 12. Toll Amunt >= 0
+
+-------------------------------------------------
+
+------------------------ CREATING PARTITIONED TABLE WITH ORC FORMAT ---------------------------------------------
+---- NAME OF THE TABLE : yellow_tripdata_2017_partitioned_orc
+--------------------------------------------------------------------------------------------
+-- Before partitioning, let us chech whether we have enough records that go into individual partions to determine levels of partition.
+-- We decide to take 2 levels of partition
+-- 1. Month level
+-- 2. Day level
+
+select vendorid, count(*) as avg_trip_day
+from yellow_tripdata_2017 
+group by vendorid, DAYOFMONTH(tpep_pickup_datetime);
+
+-- Remark: There are sufficient records to partition per month per day in each group. 
+-- Our partition will be on month and with in month on date. 
+
+--Step 2c: PARTITION THE DATA  
+-- IMPORTANT: BEFORE PARTITIONING ANY TABLE, MAKE SURE YOU RUN THESE COMMANDS 
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+
+-- Step 2d: Creating a partitioned table (trip_mnth, trip_date) in orc file format
+-- First drop the table if exists
+
+-- NAME OF THE TABLE: 'yellow_tripdata_2017_partitioned_orc'
+
+-- Drop the table if exists
+drop table if exists yellow_tripdata_2017_partitioned_orc;
+
+-- Then create external table partitioned and orc file type
+create external table if not exists yellow_tripdata_2017_partitioned_orc(
+VendorID int, 
+tpep_pickup_datetime timestamp,
+tpep_dropoff_datetime timestamp,
+passenger_count int, 
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double)
+ partitioned by (trip_mnth int, trip_date int)
+stored as orc location '/user/hive/warehouse/vidya_assignment_orc'
+tblproperties ("orc.compress"="SNAPPY");
+
+-- Let us write the select statement, it should give 0 results since we did not insert any data
+select * from yellow_tripdata_2017_partitioned_orc;
+
+-- Step 2e: Inserting data into the partitioned file
+insert overwrite table yellow_tripdata_2017_partitioned_orc partition(trip_mnth, trip_date)
+select VendorID, 
+       tpep_pickup_datetime,
+       tpep_dropoff_datetime,
+       passenger_count, 
+       trip_distance,
+       RatecodeID,
+       store_and_fwd_flag,
+       PULocationID,
+       DOLocationID,
+       payment_type,
+       fare_amount,
+       extra,
+       mta_tax,
+       tip_amount,
+       tolls_amount,
+       improvement_surcharge,
+       total_amount, 
+       month(tpep_pickup_datetime) as trip_mnth, 
+       DAYOFMONTH(tpep_pickup_datetime) as trip_date
+       
+       from yellow_tripdata_2017 where year(tpep_pickup_datetime) = 2017 
+                                    and (month(tpep_pickup_datetime) = 11 or month(tpep_pickup_datetime) = 12)
+                                    and passenger_count > 0
+                                    and trip_distance > 0
+                                    and RatecodeID != 99
+                                    and fare_amount > 0
+                                    and total_amount > 0
+                                    and (extra = 0 or extra = 0.5 or extra = 1)
+                                    and mta_tax = 0.5
+                                    and Improvement_surcharge = 0.3
+                                    and Tip_amount >= 0
+                                    and Tolls_amount >= 0;
+
+-- Let us write the select statement for counting, now it should have data
+select count(*) from yellow_tripdata_2017_partitioned_orc;
+-- Note: We can observe that, the order of data changed, it is in a particular order according to month and date
+
+
+-- Randomly check data whether a clean orc file is created or not by taking any of the above mentioned where clauses and running it.
+-- Let us look at a particular month, particular date data
+-- Rough Work 1: Check for october 2017 data.. Should not be there
+select * from yellow_tripdata_2017_partitioned_orc
+where trip_mnth = 10
+and trip_date = 1 limit 10;
+-- 0 results found
+-- Rough Work 2: Check for fare amount < 0.. Should not be there
+select * from yellow_tripdata_2017_partitioned_orc
+where fare_amount <= 0;
+-- 0 results found
+
+--- Just print the first 10 records from partitioned file
+select * from yellow_tripdata_2017_partitioned_orc limit 10;
+select count(*) as total_rows from yellow_tripdata_2017_partitioned_orc;
+---------------------------------------------------------------------------------------------------------------------
+------------------ SUCCESSFULLY CREATED PARTITIONED TABLE FOR YELLOW CAB TRIPS DATA ---------------------------------
+---------------------------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------
+----------------------------- ANALYSIS PART 1 ----------------------------------------------------------
+-------------------------------------------------------------------------------------------
+
+-- Q1: Compare the overall average fare per trip for November and December.
+select trip_mnth as trip_month, round(avg(fare_amount),2) as average_fare_per_trip_in_each_month
+       from yellow_tripdata_2017_partitioned_orc
+       group by trip_mnth;
+       
+-- RESULTS: 
+-- 	trip_month	average_fare_per_trip_in_each_month
+--  11	                12.74
+--	12	                12.52
+
+-- Remarks: Average fares in November are only slightly greater than that of in december.
+
+-- Q2: Explore the ‘number of passengers per trip’ - 
+--     1. how many trips are made by each level of ‘Passenger_count’? 
+--     2. Do most people travel solo or with other people?
+
+select passenger_count, count(passenger_count) as trips_with_corresponding_passenger_counts
+from yellow_tripdata_2017_partitioned_orc
+group by passenger_count;
+
+-- RESULTS:
+--	passenger_count	    trips_with_corresponding_passenger_counts
+--          1	                815985
+--	        2	                174294
+--          3               	50074
+--          4               	24595
+--	        5               	53980
+--	        6               	32846
+--      	7               	3
+
+-- Remarks: From the table as well as from bar chart, 
+--          we get that `solo passenger trips` are way higher than any other passenger count. 
+--          On top of that, the numnber of trips decreases with increase in passenger count
+
+-- Q3: Which is the most preferred mode of payment?
+
+select payment_type, count(payment_type) as total_number_of_payments_per_payment_type
+from yellow_tripdata_2017_partitioned_orc
+group by payment_type;
+
+-- RESULTS: 
+-- 	payment_type	total_number_of_payments_per_payment_type
+--	    1	                    777055	
+--      2                   	368775
+--	    3                   	4650
+--      4                   	1297
+
+-- From Metadata information, Payment type 1 is `Credit Card`. is the most frequent payment type
+
+-- Q4: What is the average tip paid per trip? 
+--     Compare the average tip with the 25th, 50th and 75th percentiles and 
+--     comment whether the ‘average tip’ is a representative statistic (of the central tendency) of ‘tip amount paid’. 
+--     Hint: You may use percentile_approx(DOUBLE col, p): 
+--           Returns an approximate pth percentile of a numeric column (including floating point types) in the group.
+
+select round(avg(tip_amount),2) as average_tip_amount, 
+       round(percentile_approx(tip_amount, 0.25),2) as percentile_25_tip,
+       round(percentile_approx(tip_amount, 0.50),2) as percentile_50_tip,
+       round(percentile_approx(tip_amount, 0.75),2) as percentile_75_tip
+       from yellow_tripdata_2017_partitioned_orc;
+       
+-- RESULTS:
+-- 	average_tip_amount	percentile_25_tip	percentile_50_tip	percentile_75_tip
+--	1.80            	    0	                1.35	            2.45
+
+-- Remarks: In general, if mean and median are on the same line, we call it symmetrically distribution.
+--          1. A median is the 50th percentile value while average is average of entire data.
+--          2. In our results, mean > median (50th percentile) which says, my data is positively (right side) skewed.
+--          3. So, right skewnwss is the central tendency of data
+--          4. We can say, average tip is not a representative of central tendency in the current case.
+
+-- Q5: Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied?
+
+select sum(CASE when extra != 0 THEN 1 ELSE 0 END)as Trips_With_Extra_Charge, 
+       count(*)as Total_Trips,
+       round(100*sum(CASE when extra != 0 THEN 1 ELSE 0 END)/count(*),5) as Fraction_With_Extra_Charge
+       from yellow_tripdata_2017_partitioned_orc;
+
+-- RESULTS: 
+-- 	Trips_With_Extra_Charge 	        Total_Trips	        Fraction_With_Extra_Charge
+--	532362	                            1151777	            46.22093
+
+-- Remarks: There are approximately 46.22% trips with extra charges levied
+
+
+----------------------------------------------------------------------------------
+----------------------------- ANALYSIS PART 2 ----------------------------------------------------------
+-------------------------------------------------------------------------------------------
+-- Q1: What is the correlation between the number of passengers on any given trip, and the tip paid per trip? 
+--     Do multiple travellers tip more compared to solo travellers? Hint: Use CORR(Col_1, Col_2)
+
+select round(corr(tip_amount, passenger_count),5) as corr_passcount_vs_tip_general , 
+       round(avg(CASE when passenger_count=1 then tip_amount else null end),2) as solo_avg_tip,
+       round(avg(CASE when passenger_count !=1 then tip_amount else null end),2) as non_solo_avg_tip
+       from yellow_tripdata_2017_partitioned_orc;
+       
+-- RESULTS:
+-- 	corr_passcount_vs_tip_general	solo_avg_tip	non_solo_avg_tip
+--	        -0.00478	                1.81	        1.78
+
+-- Remarks: 1. Correlation between no of passengers and tip amount is very less as well as negative. 
+--          2. This suggests that as the number of passengers increases, the tip amount decreases but very slightly.
+--          3. To reiterate, the passenger count and tip amount has almost no correlation.
+--          4. As negative sign in the correlation indicates, we can confirm from averages that solo passengers pay more tips than 
+--             multiple passangers
+
+-- Q2: Segregate the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20. 
+--     Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+select count(tip_amount) as total_trips,
+       round(100*sum(if(tip_amount > 0 and tip_amount < 5,1,0))/count(*),2) as percent_in_bucket_0_5,
+       round(100*sum(if(tip_amount >= 5 and tip_amount < 10,1,0))/count(*),2) as percent_in_bucket_5_10,
+       round(100*sum(if(tip_amount >= 10 and tip_amount < 15,1,0))/count(*),2) as percent_in_bucket_10_15,
+       round(100*sum(if(tip_amount >= 15 and tip_amount < 20,1,0))/count(*),2) as percent_in_bucket_15_20,
+       round(100*sum(if(tip_amount >= 20 ,1,0))/count(*),2) as percent_in_bucket_20_above
+       from yellow_tripdata_2017_partitioned_orc;
+
+-- RESULTS: 
+---------------------------------------------------------------------------------------------------------------------------------
+-- 	total_trips	 percent_in_bucket_0_5	percent_in_bucket_5_10	percent_in_bucket_10_15	percent_in_bucket_15_20	percent_in_bucket_20_above
+--------------------------------------------------------------------------------------------------------------------------------------
+--	1151777	        57.23	                5.63	                1.64	                    0.11                    0.05
+
+-- Remarks: We can say that, most percentage tips paid are from 0$ to 5$ bracket.
+
+
+-- Q3: Which month has a greater average ‘speed’ - November or December? 
+--     Note that the variable ‘speed’ will have to be derived from other metrics. 
+--     Hint: You have columns for distance and time.
+
+select trip_mnth,
+       round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600)),2) as avg_trip_distance_per_month
+       from yellow_tripdata_2017_partitioned_orc
+       group by trip_mnth;
+
+-- RESULTS:
+-- 	trip_mnth	avg_trip_speed_per_month
+--	11	            10.89
+--	12	            10.99
+
+-- Remarks:  The average speed fro trips in both months is approximately equal
+
+-- Q4: Analyse the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) and 25th December (Christmas) 
+--    and compare it with the overall average. 
+select trip_date, 
+       round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600)),2) as trip_speed_special_days
+       from yellow_tripdata_2017_partitioned_orc
+       where trip_mnth = 12 
+       and trip_date in (25,31)
+       group by trip_date;
+       
+-- RESULTS:
+-- 	trip_date	trip_speed_special_days
+--	    25	        15.05
+--	    31	        13.21
+
+-- Remarks: We assume to compute average speed of each date separately.
+--          1. The average speed of november and december overall or independently is less than the average speed on special dates.
+--          2. On important dates, the speed is approx 30 - 50% higher
+-- Ref to Q3 for speeds of months....
